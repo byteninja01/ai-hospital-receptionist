@@ -1,25 +1,35 @@
 import axios from "axios";
 
-// Using a basic local configuration for now
 const API_URL = "http://localhost:8000";
+
+// Simple session management for thread persistence
+let threadId = localStorage.getItem("medeye_thread_id");
+
+if (!threadId) {
+  threadId = Math.random().toString(36).substring(7);
+  localStorage.setItem("medeye_thread_id", threadId);
+}
 
 export const sendMessageToAPI = async (data) => {
   try {
-    const response = await axios.post(`${API_URL}/chat`, data);
+    // Include the threadId in every request to maintain conversation context
+    const response = await axios.post(`${API_URL}/chat`, {
+      ...data,
+      thread_id: threadId
+    });
     return response;
   } catch (error) {
     console.error("API error:", error);
-    // Provide a mocked response to prevent breaking the flow during local dev if backend isn't up
     return {
       data: {
-        message: "This is a simulated AI response.",
-        patient: {
-          name: "John Doe",
-          age: 45,
-          query: data.patient_query,
-          ward: "General" 
-        }
+        message: "Sorry, I'm having trouble connecting to the hospital systems. Please try again.",
+        patient: null
       }
     };
   }
+};
+
+export const resetSession = () => {
+  threadId = Math.random().toString(36).substring(7);
+  localStorage.setItem("medeye_thread_id", threadId);
 };
