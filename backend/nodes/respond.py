@@ -15,9 +15,13 @@ def generate_response(state):
     # Invoke LLM with history to ensure conversational flow
     res = llm.invoke(messages + [prompt])
     
-    # Store the text message for the frontend
-    state["message"] = res.content.strip()
+    # Handle list content (common in newer Gemini/LangChain versions)
+    full_content = res.content
+    if isinstance(full_content, list):
+        full_content = "".join([c if isinstance(c, str) else c.get("text", "") for c in full_content])
+    
+    clean_message = full_content.strip() if full_content else ""
+    state["message"] = clean_message
     
     # Add the AI message to the conversation history
-    # LangGraph will merge this into the 'messages' list because of Annotated[..., operator.add]
-    return {"messages": [AIMessage(content=res.content.strip())], "message": res.content.strip()}
+    return {"messages": [AIMessage(content=clean_message)], "message": clean_message}
