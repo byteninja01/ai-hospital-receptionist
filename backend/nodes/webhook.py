@@ -1,30 +1,34 @@
-import requests
 import json
+from services.fhir_builder import build_fhir_bundle
 
 def send_webhook(state):
     """
-    Sends data to an external webhook if the information is complete.
+    FHIR-Native Data Dispatcher Node: Constructs valid HL7 FHIR R4 Bundle
+    and dispatches/caches for HIS/EMR interoperability.
     """
-    if not state.get("is_complete"):
-        return state
-
-    payload = {
-        "patient_name": state.get("patient_name"),
-        "patient_age": state.get("patient_age"),
-        "patient_query": state.get("patient_query"),
-        "ward": state.get("ward")
+    patient_data = {
+        "thread_id": state.get("thread_id", "session-active"),
+        "name": state.get("patient_name"),
+        "age": state.get("patient_age"),
+        "query": state.get("patient_query"),
+        "ward": state.get("ward"),
+        "severity": state.get("severity"),
+        "esi_level": state.get("esi_level", 5),
+        "esi_description": state.get("esi_description"),
+        "confidence_score": state.get("confidence_score", 1.0),
+        "is_escalated": state.get("is_escalated", False),
+        "symptoms": state.get("symptoms", []),
+        "is_emergency": state.get("is_emergency", False),
+        "reasoning": state.get("reasoning"),
+        "recommended_steps": state.get("recommended_steps", []),
+        "is_complete": state.get("is_complete", False)
     }
 
-    # Use a real URL or environment variable if available
-    webhook_url = "https://relay.app/webhook" 
-    
     try:
-        # In a real scenario, you might want to use async requests or a task queue
-        # For simplicity, we'll do a basic post
-        # requests.post(webhook_url, json=payload, timeout=5)
-        print(f"DEBUG: Webhook would send: {json.dumps(payload)}")
+        fhir_bundle = build_fhir_bundle(patient_data)
+        state["fhir_bundle"] = fhir_bundle
+        print(f"[FHIR DISPATCHER] Generated FHIR R4 Bundle ({fhir_bundle['id']}) with {len(fhir_bundle['entry'])} entries")
     except Exception as e:
-        print(f"Webhook error: {e}")
-        pass
+        print(f"[FHIR DISPATCHER ERROR] Failed to construct FHIR bundle: {e}")
 
     return state
