@@ -1,9 +1,9 @@
-from typing import TypedDict, Optional, Annotated, List
+from typing import TypedDict, Optional, Annotated, List, Dict, Any
 from langchain_core.messages import BaseMessage
 import operator
 
 class PatientState(TypedDict):
-    # 'messages' will hold the history, we use operator.add to append
+    # 'messages' will hold history, operator.add appends
     messages: Annotated[List[BaseMessage], operator.add]
     
     patient_name: Optional[str]
@@ -12,3 +12,16 @@ class PatientState(TypedDict):
     ward: Optional[str]
     is_complete: bool
     message: Optional[str]
+    
+    # Phase 1 Safety-First Triage Core Fields
+    severity: Optional[str]
+    esi_level: Optional[int]
+    esi_description: Optional[str]
+    confidence_score: Optional[float]
+    is_escalated: Optional[bool]
+    symptoms: Optional[List[str]]
+    is_emergency: Optional[bool]
+    reasoning: Optional[str]
+    recommended_steps: Optional[List[str]]
+    triage_timestamp: Optional[str]
+    reasoning_trace: Optional[Dict[str, Any]]

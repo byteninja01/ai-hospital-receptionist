@@ -9,9 +9,15 @@ def classify_ward(state):
     
     prompt = f"Based on the patient query and history, classify the triage ward. Query: {query}"
     
-    # We provide history for context if the query is vague (e.g. "I'm 30" followed by "pain here")
-    result = structured_llm.invoke(messages + [prompt])
-    
-    state["ward"] = result.ward
-    
+    try:
+        result = structured_llm.invoke(messages + [prompt])
+        state["ward"] = result.ward
+        state["reasoning"] = result.reasoning
+        state["severity"] = result.severity
+        state["symptoms"] = result.symptoms
+        state["is_emergency"] = result.is_emergency
+        state["recommended_steps"] = result.recommended_steps
+    except Exception as e:
+        print(f"Error in classify_ward: {e}")
+        
     return state
