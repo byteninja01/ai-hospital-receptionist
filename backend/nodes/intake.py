@@ -9,6 +9,11 @@ def clinical_intake(state):
     """
     query = state.get("patient_query", "")
     messages = state.get("messages", [])
+    thread_id = state.get("thread_id")
+    
+    # Persist thread_id in state so webhook + scheduler can access it
+    if thread_id and not state.get("thread_id"):
+        state["thread_id"] = thread_id
     
     structured_llm = llm.with_structured_output(ClinicalIntake)
     

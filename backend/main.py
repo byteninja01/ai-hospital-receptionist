@@ -7,6 +7,12 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import uuid
 
+from services.db import (
+    init_db, save_patient, load_all_patients, load_patient, clear_all_patients,
+    load_all_appointments, load_appointment
+)
+from services.scheduler import assign_token, rerank_queue
+
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="MedEye AI Receptionist API")
 app.state.limiter = limiter
@@ -20,9 +26,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory patient queue store
-patient_queue = []
+# ── On Startup: initialise SQLite ─────────────────────────────────────────────
+@app.on_event("startup")
+def on_startup():
+    init_db()
 
+# ── Department Roster (static) ────────────────────────────────────────────────
 DEPARTMENTS = [
     {
         "id": "emergency",
@@ -105,117 +114,164 @@ DEPARTMENTS = [
     }
 ]
 
+
+# ── Chat ──────────────────────────────────────────────────────────────────────
+
 @app.post("/chat")
 @limiter.limit("20/minute")
 async def chat(request: Request):
     data = await request.json()
-    
+
     query = data.get("patient_query", "")
     thread_id = data.get("thread_id") or str(uuid.uuid4())
-    
+
     # LangGraph Config for checkpointer
     config = {"configurable": {"thread_id": thread_id}}
-    
-    # We send the new message to the graph. 
-    # Because of the Annotated[..., operator.add] in state, this will append to history.
+
+    # Inject thread_id into initial state so all nodes can access it
     initial_input = {
         "messages": [HumanMessage(content=query)],
-        "patient_query": query # Keep for backward compatibility/logic
-    }
-    
-    # Invoke the graph with the thread_id config
-    result = graph.invoke(initial_input, config=config)
-    
-    is_complete = result.get("is_complete", False)
-    
-    # Save or update patient status in queue
-    patient_record = {
+        "patient_query": query,
         "thread_id": thread_id,
-        "name": result.get("patient_name"),
-        "age": result.get("patient_age"),
-        "query": result.get("patient_query"),
-        "ward": result.get("ward"),
-        "severity": result.get("severity", "Routine"),
-        "esi_level": result.get("esi_level", 5),
+    }
+
+    result = graph.invoke(initial_input, config=config)
+
+    is_complete = result.get("is_complete", False)
+
+    # Build patient record from graph output
+    patient_record = {
+        "thread_id":       thread_id,
+        "name":            result.get("patient_name"),
+        "age":             result.get("patient_age"),
+        "query":           result.get("patient_query"),
+        "ward":            result.get("ward"),
+        "severity":        result.get("severity", "Routine"),
+        "esi_level":       result.get("esi_level", 5),
         "esi_description": result.get("esi_description", "Level 5: Non-Urgent"),
         "confidence_score": result.get("confidence_score", 1.0),
-        "is_escalated": result.get("is_escalated", False),
-        "symptoms": result.get("symptoms", []),
-        "is_emergency": result.get("is_emergency", False),
-        "reasoning": result.get("reasoning", ""),
+        "is_escalated":    result.get("is_escalated", False),
+        "symptoms":        result.get("symptoms", []),
+        "is_emergency":    result.get("is_emergency", False),
+        "reasoning":       result.get("reasoning", ""),
         "recommended_steps": result.get("recommended_steps", []),
         "triage_timestamp": result.get("triage_timestamp"),
         "reasoning_trace": result.get("reasoning_trace", {}),
-        "is_complete": is_complete
+        "is_complete":     is_complete,
     }
-    
-    # Find existing record
-    existing_idx = -1
-    for idx, p in enumerate(patient_queue):
-        if p["thread_id"] == thread_id:
-            existing_idx = idx
-            break
-            
-    if existing_idx != -1:
-        patient_queue[existing_idx] = patient_record
-    else:
-        patient_queue.append(patient_record)
-        
+
+    # Appointment and consent come from the webhook node via state
+    appointment = result.get("appointment")
+    consent_artifact = result.get("consent_artifact")
+
     return {
-        "thread_id": thread_id,
-        "message": result.get("message", "I have received your information."),
-        "patient": patient_record
+        "thread_id":       thread_id,
+        "message":         result.get("message", "I have received your information."),
+        "patient":         patient_record,
+        "appointment":     appointment,
+        "consent":         consent_artifact,
     }
+
+
+# ── Patients ──────────────────────────────────────────────────────────────────
 
 @app.get("/patients")
 def get_patients():
-    return patient_queue
+    """Return all triaged patients from SQLite, newest first."""
+    return load_all_patients()
+
+
+@app.get("/patients/{thread_id}")
+def get_patient(thread_id: str):
+    """Return a single patient record."""
+    record = load_patient(thread_id)
+    if not record:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Patient not found")
+    return record
+
+
+@app.post("/patients/clear")
+def clear_patients():
+    clear_all_patients()
+    return {"status": "success", "message": "Patient queue and appointments cleared"}
+
+
+# ── Appointments (Phase 3) ────────────────────────────────────────────────────
+
+@app.get("/appointments")
+def get_appointments():
+    """
+    Return the full priority-sorted appointment queue.
+    Sorted: ESI level ASC (most critical first), then FIFO within same tier.
+    """
+    return load_all_appointments()
+
+
+@app.get("/appointments/{thread_id}")
+def get_appointment(thread_id: str):
+    """Return a single patient's appointment/token details."""
+    appt = load_appointment(thread_id)
+    if not appt:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    return appt
+
+
+@app.post("/appointments/rerank")
+def rerank_appointments():
+    """
+    Re-sort and recalculate wait estimates for all active appointments.
+    Call this when a new high-ESI patient arrives and shifts the queue.
+    """
+    updated = rerank_queue()
+    return {
+        "status": "success",
+        "message": f"Queue re-ranked. {len(updated)} appointments updated.",
+        "appointments": updated
+    }
+
+
+# ── FHIR Endpoints ────────────────────────────────────────────────────────────
 
 @app.get("/fhir/bundle/{thread_id}")
 def get_fhir_bundle(thread_id: str):
     from services.fhir_builder import build_fhir_bundle
-    patient_record = None
-    for p in patient_queue:
-        if p["thread_id"] == thread_id:
-            patient_record = p
-            break
-            
+    patient_record = load_patient(thread_id)
     if not patient_record:
         patient_record = {"thread_id": thread_id, "name": "Walk-in Patient", "ward": "General Practice"}
-        
     return build_fhir_bundle(patient_record)
+
 
 @app.get("/fhir/export")
 def export_all_fhir_bundles():
     from services.fhir_builder import build_fhir_bundle
     from datetime import datetime
-    
+
     entries = []
-    for p in patient_queue:
+    for p in load_all_patients():
         bundle = build_fhir_bundle(p)
         entries.append({
             "fullUrl": f"urn:uuid:{bundle['id']}",
             "resource": bundle
         })
-        
+
     return {
         "resourceType": "Bundle",
         "id": f"export-bundle-{uuid.uuid4().hex[:8]}",
         "type": "transaction",
         "timestamp": datetime.utcnow().isoformat() + "Z",
-        "total": len(patient_queue),
+        "total": len(entries),
         "entry": entries
     }
 
-@app.post("/patients/clear")
-def clear_patients():
-    global patient_queue
-    patient_queue.clear()
-    return {"status": "success", "message": "Patient queue cleared"}
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
 
 @app.get("/departments")
 def get_departments():
     return DEPARTMENTS
+
 
 @app.post("/reset")
 async def reset_session(request: Request):
@@ -223,25 +279,22 @@ async def reset_session(request: Request):
     thread_id = data.get("thread_id")
     if thread_id:
         try:
-            # Safely clear checkpointer storage
             if hasattr(graph, "checkpointer") and hasattr(graph.checkpointer, "storage"):
                 for k in list(graph.checkpointer.storage.keys()):
                     if thread_id in str(k):
                         del graph.checkpointer.storage[k]
-                        
-            # Remove patient from queue if not completed, or keep it. Let's remove from queue on reset
-            global patient_queue
-            patient_queue = [p for p in patient_queue if p["thread_id"] != thread_id]
-            
             return {"status": "success", "message": f"Session {thread_id} reset successfully"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
     return {"status": "error", "message": "thread_id is required"}
 
+
 @app.get("/health")
 def health_check():
-    return {"status": "healthy"}
+    return {"status": "healthy", "db": "sqlite", "scheduler": "active"}
+
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

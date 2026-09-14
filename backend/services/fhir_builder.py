@@ -1,6 +1,18 @@
 import uuid
-from datetime import datetime
+import hashlib
+from datetime import datetime, timedelta
 from typing import Dict, Any, List
+
+def _generate_abha_stub(thread_id: str) -> str:
+    """
+    Generate a realistic ABDM-format ABHA stub from thread_id hash.
+    Format: XX-XXXX-XXXX-XXXX (14 digits, hyphen-separated)
+    This is a placeholder — real ABHA lookup via NDHM Sandbox is Phase 5.
+    """
+    h = hashlib.sha256(thread_id.encode()).hexdigest()
+    digits = "".join(c for c in h if c.isdigit())[:14].ljust(14, "0")
+    return f"{digits[0:2]}-{digits[2:6]}-{digits[6:10]}-{digits[10:14]}"
+
 
 def build_fhir_patient(patient_data: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -44,7 +56,7 @@ def build_fhir_patient(patient_data: Dict[str, Any]) -> Dict[str, Any]:
                     ]
                 },
                 "system": "https://healthid.ndhm.gov.in",
-                "value": "91-XXXX-XXXX-XXXX"
+                "value": _generate_abha_stub(thread_id)
             }
         ],
         "name": [
@@ -210,6 +222,110 @@ def build_fhir_risk_assessment(patient_data: Dict[str, Any]) -> Dict[str, Any]:
 
     return risk_resource
 
+
+def build_consent_artifact(patient_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Builds an ABDM Consent Artifact resource.
+    Status is always GRANTED at intake (patient implicitly consents to triage).
+    Real HIE-CM consent flow is Phase 5.
+    """
+    thread_id = patient_data.get("thread_id") or str(uuid.uuid4())
+    abha_id = _generate_abha_stub(thread_id)
+    now = datetime.utcnow()
+    expiry = now + timedelta(days=30)
+
+    return {
+        "resourceType": "Consent",
+        "id": f"consent-{thread_id[:8]}",
+        "meta": {
+            "profile": ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/Consent"]
+        },
+        "status": "active",
+        "scope": {
+            "coding": [{
+                "system": "http://terminology.hl7.org/CodeSystem/consentscope",
+                "code": "patient-privacy",
+                "display": "Privacy Consent"
+            }]
+        },
+        "category": [{
+            "coding": [{
+                "system": "http://loinc.org",
+                "code": "59284-0",
+                "display": "Patient Consent"
+            }]
+        }],
+        "patient": {
+            "reference": f"Patient/patient-{thread_id[:8]}",
+            "display": patient_data.get("name") or "Walk-in Patient"
+        },
+        "dateTime": now.isoformat() + "Z",
+        "performer": [{
+            "reference": "Organization/medeye-hospital-hip",
+            "display": "MedEye Hospital (HIP)"
+        }],
+        "organization": [{
+            "reference": "Organization/medeye-hospital-hip",
+            "display": "MedEye Hospital — MEDEYE-HOSPITAL-HIP"
+        }],
+        "policyRule": {
+            "coding": [{
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+                "code": "OPTIN"
+            }]
+        },
+        "provision": {
+            "type": "permit",
+            "period": {
+                "start": now.isoformat() + "Z",
+                "end": expiry.isoformat() + "Z"
+            },
+            "purpose": [{
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ActReason",
+                "code": "TREAT",
+                "display": "Treatment"
+            }]
+        },
+        # Custom ABDM extension fields (non-FHIR, stored for HIP use)
+        "_abdm": {
+            "artifact_id": f"CA-{thread_id[:8].upper()}",
+            "patient_ref": abha_id,
+            "hiu_id": "MEDEYE-HOSPITAL-HIP",
+            "purpose": "PATIENT_RECEPTION_TRIAGE",
+            "status": "GRANTED",
+            "granted_at": now.isoformat() + "Z",
+            "expiry": expiry.isoformat() + "Z"
+        }
+    }
+
+
+def build_fhir_diagnostic_report(patient_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Phase 4 stub: FHIR R4 DiagnosticReport resource.
+    Populated with placeholder values until OCR/Vision pipeline is implemented.
+    """
+    thread_id = patient_data.get("thread_id") or str(uuid.uuid4())
+    return {
+        "resourceType": "DiagnosticReport",
+        "id": f"diagnosticreport-{thread_id[:8]}",
+        "meta": {
+            "profile": ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/DiagnosticReport"]
+        },
+        "status": "unknown",
+        "code": {
+            "coding": [{
+                "system": "http://loinc.org",
+                "code": "11502-2",
+                "display": "Laboratory report"
+            }],
+            "text": "Pending OCR/Vision digitization (Phase 4)"
+        },
+        "subject": {"reference": f"Patient/patient-{thread_id[:8]}"},
+        "issued": datetime.utcnow().isoformat() + "Z",
+        "conclusion": "No physical report provided at this intake. Phase 4 OCR pipeline will populate this resource."
+    }
+
+
 def build_fhir_bundle(patient_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Assembles a complete, standards-compliant HL7 FHIR R4 Bundle Resource.
@@ -220,6 +336,7 @@ def build_fhir_bundle(patient_data: Dict[str, Any]) -> Dict[str, Any]:
     encounter_res = build_fhir_encounter(patient_data)
     observation_res = build_fhir_observation(patient_data)
     risk_res = build_fhir_risk_assessment(patient_data)
+    consent_res = build_consent_artifact(patient_data)
 
     bundle_resource = {
         "resourceType": "Bundle",
@@ -234,7 +351,8 @@ def build_fhir_bundle(patient_data: Dict[str, Any]) -> Dict[str, Any]:
             {"fullUrl": f"urn:uuid:{patient_res['id']}", "resource": patient_res},
             {"fullUrl": f"urn:uuid:{encounter_res['id']}", "resource": encounter_res},
             {"fullUrl": f"urn:uuid:{observation_res['id']}", "resource": observation_res},
-            {"fullUrl": f"urn:uuid:{risk_res['id']}", "resource": risk_res}
+            {"fullUrl": f"urn:uuid:{risk_res['id']}", "resource": risk_res},
+            {"fullUrl": f"urn:uuid:{consent_res['id']}", "resource": consent_res},
         ]
     }
 

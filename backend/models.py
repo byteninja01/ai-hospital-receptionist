@@ -32,3 +32,33 @@ class ClinicalIntake(BaseModel):
     is_emergency: bool = Field(..., description="Whether the condition requires immediate emergency attention")
     recommended_steps: List[str] = Field(default_factory=list, description="Recommended immediate next steps")
     reasoning_trace: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Audit explainability trace object")
+
+
+# ── Phase 3: Scheduling ────────────────────────────────────────────────────────
+
+class AppointmentSlot(BaseModel):
+    """Token-based appointment assigned by the scheduling engine."""
+    thread_id: str
+    token_number: int = Field(..., description="Queue position token (unique per session)")
+    queue_position: int = Field(..., description="Priority-sorted position in the active queue")
+    estimated_wait_minutes: int = Field(..., description="Estimated wait in minutes based on priority queue length and ward consult time")
+    assigned_doctor: str = Field(..., description="Doctor name assigned from the department roster")
+    department: str = Field(..., description="Ward / department assigned")
+    esi_level: int = Field(default=5)
+    severity: str = Field(default="Routine")
+    assigned_at: str = Field(..., description="ISO timestamp of slot assignment")
+    is_emergency: bool = Field(default=False)
+
+
+# ── Phase 2: Consent ──────────────────────────────────────────────────────────
+
+class ConsentRecord(BaseModel):
+    """Thin runtime model for a patient's active consent artifact."""
+    artifact_id: str
+    patient_ref: str
+    purpose: str = "PATIENT_RECEPTION_TRIAGE"
+    hiu_id: str = "MEDEYE-HOSPITAL-HIP"
+    status: str = "GRANTED"
+    granted_at: str
+    expiry: str
+
