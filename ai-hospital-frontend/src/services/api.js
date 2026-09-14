@@ -24,7 +24,9 @@ export const sendMessageToAPI = async (data) => {
     return {
       data: {
         message: "Sorry, I'm having trouble connecting to the hospital systems. Please try again.",
-        patient: null
+        patient: null,
+        appointment: null,
+        consent: null,
       }
     };
   }
@@ -91,3 +93,35 @@ export const exportAllFhirBundles = async () => {
     return null;
   }
 };
+
+// ── Phase 3: Scheduling Queue ─────────────────────────────────────────────────
+
+export const fetchAppointmentsQueue = async () => {
+  try {
+    const response = await axios.get(`${API_URL}/appointments`);
+    return response.data || [];
+  } catch (error) {
+    console.error("Error fetching appointments queue:", error);
+    return [];
+  }
+};
+
+export const fetchPatientAppointment = async (tid) => {
+  try {
+    const response = await axios.get(`${API_URL}/appointments/${tid || threadId}`);
+    return response.data;
+  } catch (error) {
+    return null;
+  }
+};
+
+export const rerankQueue = async () => {
+  try {
+    const response = await axios.post(`${API_URL}/appointments/rerank`);
+    return response.data;
+  } catch (error) {
+    console.error("Error re-ranking queue:", error);
+    return null;
+  }
+};
+

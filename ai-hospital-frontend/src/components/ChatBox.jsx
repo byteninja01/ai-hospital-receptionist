@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from "react";
 import MessageBubble from "./MessageBubble";
+import AppointmentToken from "./AppointmentToken";
 import { sendMessageToAPI, resetSessionAPI, getThreadId } from "../services/api";
-import { Send, Loader2, RotateCcw, AlertTriangle, Sparkles, Activity } from "lucide-react";
+import { Send, Loader2, RotateCcw, AlertTriangle, Sparkles, ShieldCheck } from "lucide-react";
 
 export default function ChatBox({ presetInput, clearPresetInput }) {
   const [messages, setMessages] = useState([
@@ -13,6 +14,8 @@ export default function ChatBox({ presetInput, clearPresetInput }) {
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [isEmergencyAlert, setIsEmergencyAlert] = useState(false);
+  const [appointment, setAppointment] = useState(null);
+  const [consent, setConsent] = useState(null);
   const endOfMessagesRef = useRef(null);
 
   useEffect(() => {
@@ -24,7 +27,7 @@ export default function ChatBox({ presetInput, clearPresetInput }) {
 
   useEffect(() => {
     endOfMessagesRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isTyping]);
+  }, [messages, isTyping, appointment]);
 
   const handleReset = async () => {
     if (window.confirm("Start a new patient intake session?")) {
@@ -36,6 +39,8 @@ export default function ChatBox({ presetInput, clearPresetInput }) {
         }
       ]);
       setIsEmergencyAlert(false);
+      setAppointment(null);
+      setConsent(null);
     }
   };
 
@@ -52,17 +57,26 @@ export default function ChatBox({ presetInput, clearPresetInput }) {
       const res = await sendMessageToAPI({ patient_query: query });
       const aiResponse = res.data;
       const patientData = aiResponse.patient || null;
+      const apptData = aiResponse.appointment || null;
+      const consentData = aiResponse.consent || null;
 
       if (patientData && (patientData.is_emergency || patientData.severity === "Critical")) {
         setIsEmergencyAlert(true);
       }
+
+      // Store appointment + consent if this message completed the intake
+      if (apptData) setAppointment(apptData);
+      if (consentData) setConsent(consentData);
 
       setMessages(prev => [
         ...prev,
         { 
           text: typeof aiResponse === 'string' ? aiResponse : aiResponse.message || "I have recorded your details.", 
           sender: "ai",
-          patientData: patientData
+          patientData: patientData,
+          // Attach appointment to this message so it renders inline
+          appointment: apptData,
+          consent: consentData,
         }
       ]);
     } catch (error) {
@@ -124,7 +138,24 @@ export default function ChatBox({ presetInput, clearPresetInput }) {
       {/* Messages Scroll Area */}
       <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6 custom-scrollbar bg-slate-50/60">
         {messages.map((msg, i) => (
-          <MessageBubble key={i} msg={msg} />
+          <div key={i}>
+            <MessageBubble msg={msg} />
+            {/* Inline appointment token card — shown on the AI message that completed intake */}
+            {msg.sender === "ai" && msg.appointment && (
+              <div className="mt-3 mb-2 ml-10 max-w-sm animate-in fade-in slide-in-from-bottom-3 duration-500">
+                <AppointmentToken
+                  appointment={msg.appointment}
+                  consent={msg.consent}
+                  showFhir={true}
+                />
+                {/* Consent notice */}
+                <div className="mt-2 flex items-center gap-1.5 text-[10px] text-slate-500 bg-slate-100/80 border border-slate-200 rounded-xl px-3 py-2">
+                  <ShieldCheck className="w-3 h-3 text-emerald-600 shrink-0" />
+                  <span>Health data processed under <strong>ABDM consent model</strong>. Consent auto-expires in 30 days. You may revoke at any time.</span>
+                </div>
+              </div>
+            )}
+          </div>
         ))}
         
         {isTyping && (
@@ -177,3 +208,4 @@ export default function ChatBox({ presetInput, clearPresetInput }) {
     </div>
   );
 }
+
